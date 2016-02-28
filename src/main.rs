@@ -151,18 +151,18 @@ impl Shell {
                             if let Some(code) = status.code() {
                                 Some(code)
                             } else {
-                                println!("{}: child ended by signal", path);
+                                println!("ion: {}: child ended by signal", path);
                                 Some(TERMINATED)
                             }
                         }
                         Err(err) => {
-                            println!("{}: Failed to wait: {}", path, err);
+                            println!("ion: failed to wait for {}: {}", path, err);
                             Some(100) // TODO what should we return here?
                         }
                     }
                 }
                 Err(err) => {
-                    println!("{}: Failed to execute: {}", path, err);
+                    println!("ion: failed to execute {}: {}", path, err);
                     Some(NO_SUCH_COMMAND)
                 }
             }
@@ -360,13 +360,16 @@ fn main() {
             if dash_c {
                 shell.on_command(&arg, &commands);
             } else {
-                let mut command_list = String::new();
-                if let Ok(mut file) = File::open(&arg) {
-                    if let Err(message) = file.read_to_string(&mut command_list) {
-                        println!("{}: Failed to read {}", message, arg);
-                    }
+                match File::open(&arg) {
+                    Ok(mut file) => {
+                        let mut command_list = String::new();
+                        match file.read_to_string(&mut command_list) {
+                            Ok(_) => shell.on_command(&command_list, &commands),
+                            Err(err) => println!("ion: failed to read {}: {}", arg, err)
+                        }
+                    },
+                    Err(err) => println!("ion: failed to open {}: {}", arg, err)
                 }
-                shell.on_command(&command_list, &commands);
             }
             return;
         }
