@@ -3,11 +3,14 @@
 #![feature(plugin)]
 #![plugin(peg_syntax_ext)]
 
+//extern crate glob;
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{stdout, Read, Write};
 use std::env;
 use std::process;
+use std::thread;
 
 use self::directory_stack::DirectoryStack;
 use self::input_editor::readln;
@@ -124,11 +127,12 @@ impl Shell {
     }
 
     fn run_job(&mut self, job: &Job, commands: &HashMap<&str, Command>) {
-        let job = self.variables.expand_job(job);
+        let mut job = self.variables.expand_job(job);
+        job.expand_globs();
         let exit_status = if let Some(command) = commands.get(job.command.as_str()) {
             Some((*command.main)(job.args.as_slice(), self))
         } else {
-            self.run_external_commmand(&job.args)
+            self.run_external_commmand(job)
         };
         if let Some(code) = exit_status {
             self.variables.set_var("?", &code.to_string());
@@ -136,38 +140,53 @@ impl Shell {
     }
 
     /// Returns an exit code if a command was run
-    fn run_external_commmand(&mut self, args: &Vec<String>) -> Option<i32> {
-        if let Some(path) = args.get(0) {
-            let mut command = process::Command::new(path);
-            for i in 1..args.len() {
-                if let Some(arg) = args.get(i) {
-                    command.arg(arg);
+    fn run_external_commmand(&mut self, job: Job) -> Option<i32> {
+        if job.background {
+            thread::spawn(move || {
+                let mut command = Shell::build_command(&job);
+                command.stdin(process::Stdio::null());
+                if let Ok(mut child) = command.spawn() {
+                    Shell::wait_and_get_status(&mut child, &job.command);
                 }
-            }
+            });
+            None
+        } else {
+            let mut command = Shell::build_command(&job);
             match command.spawn() {
-                Ok(mut child) => {
-                    match child.wait() {
-                        Ok(status) => {
-                            if let Some(code) = status.code() {
-                                Some(code)
-                            } else {
-                                println!("ion: {}: child ended by signal", path);
-                                Some(TERMINATED)
-                            }
-                        }
-                        Err(err) => {
-                            println!("ion: failed to wait for {}: {}", path, err);
-                            Some(100) // TODO what should we return here?
-                        }
-                    }
-                }
+                Ok(mut child) => Some(Shell::wait_and_get_status(&mut child, &job.command)),
                 Err(err) => {
-                    println!("ion: failed to execute {}: {}", path, err);
+                    println!("ion: failed to execute {}: {}", job.command, err);
                     Some(NO_SUCH_COMMAND)
                 }
             }
-        } else {
-            None
+        }
+    }
+
+    fn build_command(job: &Job) -> process::Command {
+        let mut command = process::Command::new(&job.command);
+        for i in 1..job.args.len() {
+            if let Some(arg) = job.args.get(i) {
+                command.arg(arg);
+            }
+        }
+        command
+    }
+
+    // TODO don't pass in command and do printing outside this function
+    fn wait_and_get_status(child: &mut process::Child, command: &str) -> i32 {
+        match child.wait() {
+            Ok(status) => {
+                if let Some(code) = status.code() {
+                    code
+                } else {
+                    println!("ion: child ended by signal: {}", command);
+                    TERMINATED
+                }
+            }
+            Err(err) => {
+                println!("ion: failed to wait: {}: {}", command, err);
+                100 // TODO what should we return here?
+            }
         }
     }
 }
@@ -199,7 +218,7 @@ impl Command {
         commands.insert("cd",
                         Command {
                             name: "cd",
-                            help: "To change the current directory\n    cd <your_destination>",
+                            help: "Change the current directory\n    cd <path>",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.directory_stack.cd(args)
                             },
@@ -208,8 +227,7 @@ impl Command {
         commands.insert("dirs",
                         Command {
                             name: "dirs",
-                            help: "Make a sleep in the current session\n    sleep \
-                                   <number_of_seconds>",
+                            help: "Display the current directory stack",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.directory_stack.dirs(args)
                             },
@@ -242,7 +260,7 @@ impl Command {
         commands.insert("read",
                         Command {
                             name: "read",
-                            help: "To read some variables\n    read <my_variable>",
+                            help: "Read some variables\n    read <variable>",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.variables.read(args)
                             },
@@ -251,8 +269,7 @@ impl Command {
         commands.insert("pushd",
                         Command {
                             name: "pushd",
-                            help: "Make a sleep in the current session\n    sleep \
-                                   <number_of_seconds>",
+                            help: "Push a directory to the stack",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.directory_stack.pushd(args)
                             },
@@ -261,8 +278,7 @@ impl Command {
         commands.insert("popd",
                         Command {
                             name: "popd",
-                            help: "Make a sleep in the current session\n    sleep \
-                                   <number_of_seconds>",
+                            help: "Pop a directory from the stack",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.directory_stack.popd(args)
                             },
@@ -271,7 +287,7 @@ impl Command {
         commands.insert("history",
                         Command {
                             name: "history",
-                            help: "Display all commands previously executed",
+                            help: "Display a log of all commands previously executed",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.history.history(args)
                             },
@@ -298,7 +314,7 @@ impl Command {
         commands.insert("end",
                         Command {
                             name: "end",
-                            help: "end a code block",
+                            help: "End a code block",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.flow_control.end(args)
                             },
@@ -307,7 +323,7 @@ impl Command {
         commands.insert("for",
                         Command {
                             name: "for",
-                            help: "Loop over something",
+                            help: "Iterate through a list",
                             main: box |args: &[String], shell: &mut Shell| -> i32 {
                                 shell.flow_control.for_(args)
                             },
@@ -322,7 +338,8 @@ impl Command {
         commands.insert("help",
                         Command {
                             name: "help",
-                            help: "Display a little helper for a given command\n    help ls",
+                            help: "Display helpful information about a given command, or list \
+                                   commands if none specified\n    help <command>",
                             main: box move |args: &[String], _: &mut Shell| -> i32 {
                                 if let Some(command) = args.get(1) {
                                     if command_helper.contains_key(command.as_str()) {

@@ -1,27 +1,50 @@
 use self::grammar::job_list;
+//use glob::glob;
 
 #[derive(Debug, PartialEq)]
 pub struct Job {
     pub command: String,
     pub args: Vec<String>,
+    pub background: bool,
 }
 
 impl Job {
-    fn new(args: Vec<&str>) -> Self {
+    pub fn new(args: Vec<&str>, background: bool) -> Self {
         let command = args[0].to_string();
         let args = args.iter().map(|arg| arg.to_string()).collect();
         Job {
             command: command,
             args: args,
+            background: background,
         }
     }
 
-    pub fn from_vec_string(args: Vec<String>) -> Self {
+    pub fn from_vec_string(args: Vec<String>, background: bool) -> Self {
         let command = args[0].clone();
         Job {
             command: command,
             args: args,
+            background: background,
         }
+    }
+
+    pub fn expand_globs(&mut self) {
+        let mut new_args: Vec<String> = vec![];
+        for arg in self.args.drain(..) {
+            let mut pushed_glob = false;
+            /*
+            if let Ok(expanded) = glob(&arg) {
+                for path in expanded.filter_map(Result::ok) {
+                    pushed_glob = true;
+                    new_args.push(path.to_string_lossy().into_owned());
+                }
+            }
+            */
+            if !pushed_glob {
+                new_args.push(arg);
+            }
+        }
+        self.args = new_args;
     }
 }
 
@@ -42,12 +65,16 @@ job -> Job
     = whitespace? res:_job whitespace? comment? { res }
 
 _job -> Job
-    = args:word ++ whitespace { Job::new(args) }
+    = args:word ++ whitespace background:background_token? { Job::new(args, background.is_some()) }
+
+background_token -> ()
+    = [&]
+    / whitespace [&]
 
 word -> &'input str
     = double_quoted_word
     / single_quoted_word
-    / [^ \t\r\n#;]+ { match_str }
+    / [^ \t\r\n#;&]+ { match_str }
 
 double_quoted_word -> &'input str
     = ["] word:_double_quoted_word ["] { word }
@@ -222,6 +249,24 @@ mod tests {
     }
 
     #[test]
+    fn not_background_job() {
+        let jobs = job_list("echo hello world").unwrap();
+        assert_eq!(false, jobs[0].background);
+    }
+
+    #[test]
+    fn background_job() {
+        let jobs = job_list("echo hello world&").unwrap();
+        assert_eq!(true, jobs[0].background);
+    }
+
+    #[test]
+    fn background_job_with_space() {
+        let jobs = job_list("echo hello world &").unwrap();
+        assert_eq!(true, jobs[0].background);
+    }
+
+    #[test]
     fn lone_comment() {
         let jobs = job_list("# ; \t as!!+dfa").unwrap();
         assert_eq!(0, jobs.len());
@@ -311,9 +356,9 @@ fi
 
 # comment
    # comment
-  
 
-    if a == a   
+
+    if a == a
   echo true a == a  # Line ending commment
 
   if b != b
@@ -329,7 +374,7 @@ fi
   fi
 else
   echo false a == a
-      fi     
+      fi
 
 # comment
 
