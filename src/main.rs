@@ -352,15 +352,24 @@ fn main() {
     let commands = Command::map();
     let mut shell = Shell::new();
 
+    let mut dash_c = false;
     for arg in env::args().skip(1) {
-        let mut command_list = String::new();
-        if let Ok(mut file) = File::open(&arg) {
-            if let Err(message) = file.read_to_string(&mut command_list) {
-                println!("{}: Failed to read {}", message, arg);
+        if arg == "-c" {
+            dash_c = true;
+        } else {
+            if dash_c {
+                shell.on_command(&arg, &commands);
+            } else {
+                let mut command_list = String::new();
+                if let Ok(mut file) = File::open(&arg) {
+                    if let Err(message) = file.read_to_string(&mut command_list) {
+                        println!("{}: Failed to read {}", message, arg);
+                    }
+                }
+                shell.on_command(&command_list, &commands);
             }
+            return;
         }
-        shell.on_command(&command_list, &commands);
-        return;
     }
 
     loop {
