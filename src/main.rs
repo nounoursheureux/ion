@@ -130,7 +130,7 @@ impl Shell {
 
     pub fn print_prompt(&self) {
         self.print_prompt_prefix();
-        match self.flow_control.current_statement {
+        match self.flow_control.get_last_block().statement {
             Statement::For(_, _) => self.print_for_prompt(),
             Statement::Function(_, _) => self.print_function_prompt(),
             _ => self.print_default_prompt(),
@@ -143,12 +143,16 @@ impl Shell {
 
     // TODO eventually this thing should be gone
     fn print_prompt_prefix(&self) {
-        let prompt_prefix = self.flow_control.modes.iter().rev().fold(String::new(), |acc, mode| {
+        let prompt_prefix = self.flow_control.blocks.iter().fold(String::new(), |acc, block| {
             acc +
-            if mode.value {
-                "+ "
+            if let Statement::If(value) = block.statement {
+                if value {
+                    "+ "
+                } else {
+                    "- "
+                }
             } else {
-                "- "
+                ""
             }
         });
         print!("{}", prompt_prefix);
@@ -173,16 +177,17 @@ impl Shell {
 
         // Execute commands
         for pipeline in pipelines.drain(..) {
-            if self.flow_control.collecting_block {
+            if self.flow_control.get_last_block().collecting {
                 // TODO move this logic into "end" command
                 if pipeline.jobs[0].command == "end" {
-                    self.flow_control.collecting_block = false;
                     let block_jobs: Vec<Pipeline> = self.flow_control
-                                                   .current_block
+                                                   .blocks
+                                                   .last_mut()
+                                                   .unwrap()
                                                    .pipelines
                                                    .drain(..)
                                                    .collect();
-                    match self.flow_control.current_statement.clone() {
+                    match self.flow_control.get_last_block().statement.clone() {
                         Statement::For(ref var, ref vals) => {
                             let variable = var.clone();
                             let values = vals.clone();
@@ -198,9 +203,9 @@ impl Shell {
                         },
                         _ => {}
                     }
-                    self.flow_control.current_statement = Statement::Default;
+                    self.run_pipeline(&pipeline, commands); // run the end command to pop the current block
                 } else {
-                    self.flow_control.current_block.pipelines.push(pipeline);
+                    self.flow_control.get_last_block_mut().pipelines.push(pipeline);
                 }
             } else {
                 if self.flow_control.skipping() && !is_flow_control_command(&pipeline.jobs[0].command) {
